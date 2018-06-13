@@ -56,14 +56,16 @@ if __name__ == "__main__":
             dT = (T1-T0)
             dH = (H1-H0)            
 
-            if dT > STARTUP_DT and dH > STARTUP_DH:
+            if (dT >= STARTUP_DT) and (dH >= STARTUP_DH):
                 # Start condition
                 running = True
                 logName = time.strftime("%Y-%m-%d_%H-%M-%S")
                 startTime = time.time()
-            if T1 > STOP_T and dT < STOP_DT:
+                print("START")
+            if (T1 >= STOP_T) and (dT <= STOP_DT):
                 # Stop condition
                 # add a condition on steady state if I did not catch the transition
+                print("STOP")
                 running = False
             if T1 > DRY_T and H1 < DRY_H :
                 dry = True
