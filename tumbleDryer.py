@@ -37,7 +37,7 @@ Config.read("tumbleDryer.ini")
 pushKey = Config.get('Pushsafer', 'Key')
 pushDeviceID = Config.get('Pushsafer', 'DeviceId')
 
-STARTUP_DT = 4
+STARTUP_DT = 2
 STARTUP_DH = 5
 
 STOP_T = 30
@@ -101,18 +101,19 @@ def updateDisplay():
     if running and not dry:
         # Generate the time strings nows, rems and etas
         nows=dt.now().strftime('%H:%M')
-        h, m = divmod(rem, 60)
+        h, s = divmod(remainTime, 3600)
+        m, s = divmod(s, 60)
         rems="%02d:%02d" % (h, m)
-        etas=(dt.now()+td(minutes=rem)).strftime('%H:%M')
+        etas=(dt.now()+td(seconds=remainTime)).strftime('%H:%M')
     
         # Generate the 1th line
         l1 = "{:.1f} deg - CLK {:s}".format(T1, nows)
         l2 = "{:.1f} %RH - REM {:s}".format(H1, rems)
         l3 = "           ETA "+etas
         # Generate the 4th line with the progress bar
-        a=int(process / 10)
-        b=10-a
-        l4 = chr(0xFF)*a + "_"*b + " " + str(process) + "%"
+        a = int(completed / 10)
+        b = 10-a
+        l4 = chr(0xFF)*a + "_"*b + " " + str(completed) + "%"
 
     if running and dry :
         nows=dt.now().strftime('%H:%M')
@@ -125,7 +126,7 @@ def updateDisplay():
     mylcd.lcd_display_string(l2, 2)
     mylcd.lcd_display_string(l3, 3)
     mylcd.lcd_display_string(l4, 4)
-    mylcd.lcd_display_string_pos(chr(7),4,17)
+    #mylcd.lcd_display_string_pos(chr(7),4,17)
     mylcd.lcd_display_string_pos(chr(0),4,18)
     mylcd.lcd_display_string_pos(chr(wifiSignal()),4,19)
     
@@ -144,18 +145,21 @@ if __name__ == "__main__":
 
     T0 = None
     H0 = None
+    Hstart = None
     
     running = False
     dry = False
+    notificationFlag = False
     
     while True:
         T1, H1 = getTempRH()
         if any((T0, H0)) :
             dT = (T1-T0)
             dH = (H1-H0)            
-
-            if (dT >= STARTUP_DT) and (dH >= STARTUP_DH):
+            #if (dT >= STARTUP_DT) and (dH >= STARTUP_DH):
+            if (dT >= STARTUP_DT) :
                 # Start condition
+                Hstart = H1
                 running = True
                 logName = time.strftime("%Y-%m-%d_%H-%M-%S")
                 startTime = time.time()
@@ -163,25 +167,28 @@ if __name__ == "__main__":
                 print("START")
             if (T1 >= STOP_T) and (dT <= STOP_DT):
                 # Stop condition
-                # add a condition on steady state if I did not catch the transition
-                print("STOP")
+                # add a condition on steady state if I did not catch the transition                
                 running = False
+                mylcd.lcd_clear()
+                mylcd.backlight(0)
+                print("STOP")
             if T1 > DRY_T and H1 < DRY_H :
                 dry = True
+        T0 = T1
+        H0 = H1  
                 
         if running :
+            completed = (DRY_H-H1) / (DRY_H-Hstart) * 100.0
+            remainTime = (DRY_H-H1) / dH * PERIOD
             updateDisplay()
             msg = "{:s}\t{:.2f}\t{:.2f}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"),T1,H1)
             with open(logName+".log","a+") as f:
                 f.write(msg)
         
-        if running and dry :
-            mylcd.lcd_clear()
-            
+        
+        if running and dry and not notificationFlag:            
             elapsed_time = time.time() - startTime
             ets = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-            # Stop the machine        
-            running = False
             
             # Send notification
             init(pushKey)
@@ -200,9 +207,9 @@ if __name__ == "__main__":
                                     picture1 = "",
                                     picture2 = "",
                                     picture3 = "")
+            notificationFlag = True
             
-        T0 = T1
-        H0 = H1            
+          
         time.sleep(PERIOD - ((time.time() - t0) % PERIOD))
 		
         
