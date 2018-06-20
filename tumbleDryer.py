@@ -21,6 +21,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
+import argparse
 import smbus
 import RPi_I2C_driver
 from pushsafer import init, Client
@@ -31,20 +32,25 @@ import time
 from datetime import datetime as dt
 from datetime import timedelta as td
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--now', action="store_true", default=False, help='starts immediately')
+args = parser.parse_args()
+
 Config = ConfigParser.ConfigParser()
 Config.read("tumbleDryer.ini")
 
 pushKey = Config.get('Pushsafer', 'Key')
 pushDeviceID = Config.get('Pushsafer', 'DeviceId')
 
-STARTUP_DT = 2
+STARTUP_DT = .3
 STARTUP_DH = 5
 
 STOP_T = 30
 STOP_DT = -5
 
-DRY_H = 30
+DRY_H = 40
 DRY_T = 40
+
 
 PERIOD = 2.0 # period in seconds
 
@@ -101,19 +107,23 @@ def updateDisplay():
     if running and not dry:
         # Generate the time strings nows, rems and etas
         nows=dt.now().strftime('%H:%M')
-        h, s = divmod(remainTime, 3600)
-        m, s = divmod(s, 60)
-        rems="%02d:%02d" % (h, m)
-        etas=(dt.now()+td(seconds=remainTime)).strftime('%H:%M')
+        if remainTime :
+            h, s = divmod(remainTime, 3600)
+            m, s = divmod(s, 60)
+            rems="%02d:%02d" % (h, m)
+            etas=(dt.now()+td(seconds=remainTime)).strftime('%H:%M')
+        else :
+            rems="??:??"
+            etas="??:??"
     
         # Generate the 1th line
         l1 = "{:.1f} deg - CLK {:s}".format(T1, nows)
         l2 = "{:.1f} %RH - REM {:s}".format(H1, rems)
         l3 = "           ETA "+etas
         # Generate the 4th line with the progress bar
-        a = int(completed / 10)
+        a = int(completed / 10.0)
         b = 10-a
-        l4 = chr(0xFF)*a + "_"*b + " " + str(completed) + "%"
+        l4 = chr(0xFF)*a + "_"*b + " " + "{:>4}".format("{:.0f}%".format(completed))
 
     if running and dry :
         nows=dt.now().strftime('%H:%M')
@@ -143,6 +153,7 @@ if __name__ == "__main__":
     mylcd.lcd_clear()
     mylcd.backlight(0)
 
+
     T0 = None
     H0 = None
     Hstart = None
@@ -156,30 +167,31 @@ if __name__ == "__main__":
         if any((T0, H0)) :
             dT = (T1-T0)
             dH = (H1-H0)            
+            print("dT = {:.2f} dH = {:.2f}".format(dT,dH))
             #if (dT >= STARTUP_DT) and (dH >= STARTUP_DH):
-            if (dT >= STARTUP_DT) :
+            if ((dT >= STARTUP_DT) and not running) or args.now:
                 # Start condition
-                Hstart = H1
+                completed = 0
+                remainTime = None
                 running = True
                 logName = time.strftime("%Y-%m-%d_%H-%M-%S")
                 startTime = time.time()
                 mylcd.backlight(1)
-                print("START")
-            if (T1 >= STOP_T) and (dT <= STOP_DT):
+            if (T1 >= STOP_T) and (dT <= STOP_DT) and not running:
                 # Stop condition
                 # add a condition on steady state if I did not catch the transition                
                 running = False
                 mylcd.lcd_clear()
                 mylcd.backlight(0)
-                print("STOP")
             if T1 > DRY_T and H1 < DRY_H :
                 dry = True
         T0 = T1
         H0 = H1  
                 
         if running :
-            completed = (DRY_H-H1) / (DRY_H-Hstart) * 100.0
-            remainTime = (DRY_H-H1) / dH * PERIOD
+            if dH < 0:
+                completed = (100.0-H1) / (100.0-DRY_H) * 100.0
+                remainTime = (DRY_H-H1) / dH * PERIOD
             updateDisplay()
             msg = "{:s}\t{:.2f}\t{:.2f}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"),T1,H1)
             with open(logName+".log","a+") as f:
@@ -209,7 +221,8 @@ if __name__ == "__main__":
                                     picture3 = "")
             notificationFlag = True
             
-          
-        time.sleep(PERIOD - ((time.time() - t0) % PERIOD))
+        sleepTime = PERIOD - ((time.time() - t0) % PERIOD)
+        #print("Sleep {:.2f} sec".format(sleepTime))
+        time.sleep(sleepTime)
 		
         
