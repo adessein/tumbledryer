@@ -32,6 +32,27 @@ import time
 from datetime import datetime as dt
 from datetime import timedelta as td
 
+import logging, sys
+from os import path
+
+from numpy import mean, abs, max
+
+if 'logger' not in locals():
+    logfmt = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+
+    log_filename = path.splitext(__file__)[0] + '.log'
+    filelog = logging.FileHandler(log_filename)
+    filelog.setLevel(logging.DEBUG)
+    filelog.setFormatter(logfmt)
+    logger.addHandler(filelog)
+
+    stdlog = logging.StreamHandler(sys.stdout)
+    stdlog.setFormatter(logfmt)
+    stdlog.setLevel(logging.INFO)
+    logger.addHandler(stdlog)
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--now', action="store_true", default=False, help='starts immediately')
 args = parser.parse_args()
@@ -42,24 +63,25 @@ Config.read("tumbleDryer.ini")
 pushKey = Config.get('Pushsafer', 'Key')
 pushDeviceID = Config.get('Pushsafer', 'DeviceId')
 
-STARTUP_DT = .3
-STARTUP_DH = 5
+STARTUP_DT = float(Config.get('Thresholds', 'STARTUP_DT'))
+STOP_T = float(Config.get('Thresholds', 'STOP_T'))
+STOP_DT = float(Config.get('Thresholds', 'STOP_DT'))
+STOP_DH = float(Config.get('Thresholds', 'STOP_DH'))
+DRY_H = float(Config.get('Thresholds', 'DRY_H'))
+DRY_T = float(Config.get('Thresholds', 'DRY_T'))
 
-STOP_T = 30
-STOP_DT = -5
+AVG_N = int(Config.get('Averaging', 'AVG_N'))
+DH_TABLE_SIZE = int(Config.get('Averaging', 'DH_TABLE_SIZE'))
 
-DRY_H = 40
-DRY_T = 40
-
-
-PERIOD = 2.0 # period in seconds
+PERIOD = float(Config.get('General', 'PERIOD'))
+MAX_FATAL = int(Config.get('General', 'MAX_FATAL'))
 
 fontdata = [
         # Char 0 - Antena
         [ 0x0E, 0x11, 0x15, 0x0E, 0x04, 0x04, 0x04, 0x04],
         # Char 1 - No signal (cross)
         [ 0x00, 0x00, 0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11],
-        # Char 2 - Level 1 
+        # Char 2 - Level 1
         [ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10],
         # Char 3 - Level 2
         [ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x18],
@@ -73,22 +95,45 @@ fontdata = [
         [ 0x00, 0x00, 0x00, 0x1E, 0x13, 0x11, 0x11, 0x1F ],
 ]
 
-def getTempRH(): 
+def readConfigFile():
+    global pushKey, pushDeviceID, STARTUP_DT, STOP_T, STOP_DT, STOP_DH, DRY_H
+    global DRY_T, AVG_N, DH_TABLE_SIZE, PERIOD, MAX_FATAL
+
+    Config.read("tumbleDryer.ini")
+
+    pushKey = Config.get('Pushsafer', 'Key')
+    pushDeviceID = Config.get('Pushsafer', 'DeviceId')
+
+    STARTUP_DT = float(Config.get('Thresholds', 'STARTUP_DT'))
+    STOP_T = float(Config.get('Thresholds', 'STOP_T'))
+    STOP_DT = float(Config.get('Thresholds', 'STOP_DT'))
+    STOP_DH = float(Config.get('Thresholds', 'STOP_DH'))
+    DRY_H = float(Config.get('Thresholds', 'DRY_H'))
+    DRY_T = float(Config.get('Thresholds', 'DRY_T'))
+
+    AVG_N = int(Config.get('Averaging', 'AVG_N'))
+    DH_TABLE_SIZE = int(Config.get('Averaging', 'DH_TABLE_SIZE'))
+
+    PERIOD = float(Config.get('General', 'PERIOD'))
+    MAX_FATAL = int(Config.get('General', 'MAX_FATAL'))
+
+
+def getTempRH():
     # SHT31 address, 0x44(68)
     bus.write_i2c_block_data(0x44, 0x2C, [0x06])
-       
+
     time.sleep(0.5)
-        
+
     # SHT31 address, 0x44(68)
     # Read data back from 0x00(00), 6 bytes
     # Temp MSB, Temp LSB, Temp CRC, Humididty MSB, Humidity LSB, Humidity CRC
     data = bus.read_i2c_block_data(0x44, 0x00, 6)
-         
+
     # Convert the data
     temp = data[0] * 256 + data[1]
     cTemp = -45 + (175 * temp / 65535.0)
     humidity = 100 * (data[3] * 256 + data[4]) / 65535.0
-          
+
     return(cTemp, humidity)
 
 def wifiSignal():
@@ -106,7 +151,7 @@ def wifiSignal():
 def updateDisplay():
     if running and not dry:
         # Generate the time strings nows, rems and etas
-        nows=dt.now().strftime('%H:%M')
+        nows = dt.now().strftime('%H:%M')
         if remainTime :
             h, s = divmod(remainTime, 3600)
             m, s = divmod(s, 60)
@@ -115,7 +160,7 @@ def updateDisplay():
         else :
             rems="??:??"
             etas="??:??"
-    
+
         # Generate the 1th line
         l1 = "{:.1f} deg - CLK {:s}".format(T1, nows)
         l2 = "{:.1f} %RH - REM {:s}".format(H1, rems)
@@ -128,9 +173,9 @@ def updateDisplay():
     if running and dry :
         nows=dt.now().strftime('%H:%M')
         l1 = "{:.1f} deg - CLK {:s}".format(T1, nows)
-        l2 = "{:.1f} %RH - REM --:--"
-        l3 = "           ETA --:--"
-        l4 = "STOP THE MACHINE"
+        l2 = "{:.1f} %RH".format(H1)
+        l3 = " CLOTHES ARE DRY    "
+        l4 = " STOP THE MACHINE   "
 
     mylcd.lcd_display_string(l1, 1)
     mylcd.lcd_display_string(l2, 2)
@@ -139,90 +184,129 @@ def updateDisplay():
     #mylcd.lcd_display_string_pos(chr(7),4,17)
     mylcd.lcd_display_string_pos(chr(0),4,18)
     mylcd.lcd_display_string_pos(chr(wifiSignal()),4,19)
-    
+
 if __name__ == "__main__":
-    print("{:s}\tStarting program".format(time.strftime("%Y-%m-%d %H:%M:%S")))    
+    logger.info("Starting program")
     t0 = time.time()
-    
+
     # Initite I2C bus
     bus = smbus.SMBus(1)
-    
+
     # Initiate LCD
     mylcd = RPi_I2C_driver.lcd()
     mylcd.lcd_load_custom_chars(fontdata)
     mylcd.lcd_clear()
     mylcd.backlight(0)
 
-
     T0 = None
     H0 = None
     Hstart = None
-    
+
     running = False
     dry = False
     notificationFlag = False
-    
+
+    manualTrigger = args.now
+
+    dHtable = []
+
+    fatalCount = 0
+
     while True:
-        T1, H1 = getTempRH()
-        if any((T0, H0)) :
-            dT = (T1-T0)
-            dH = (H1-H0)            
-            print("dT = {:.2f} dH = {:.2f}".format(dT,dH))
-            #if (dT >= STARTUP_DT) and (dH >= STARTUP_DH):
-            if ((dT >= STARTUP_DT) and not running) or args.now:
-                # Start condition
-                completed = 0
-                remainTime = None
-                running = True
-                logName = time.strftime("%Y-%m-%d_%H-%M-%S")
-                startTime = time.time()
-                mylcd.backlight(1)
-            if (T1 >= STOP_T) and (dT <= STOP_DT) and not running:
-                # Stop condition
-                # add a condition on steady state if I did not catch the transition                
-                running = False
-                mylcd.lcd_clear()
-                mylcd.backlight(0)
-            if T1 > DRY_T and H1 < DRY_H :
-                dry = True
-        T0 = T1
-        H0 = H1  
-                
-        if running :
-            if dH < 0:
+        try :
+            readConfigFile()
+            T1, H1 = getTempRH()
+            if any((T0, H0)) :
+                dT = (T1-T0)
+                dH = (H1-H0)
+
+                dHtable.append(dH)
+                while len(dHtable) > DH_TABLE_SIZE:
+                    dHtable.pop(0)
+
+                #print("dT = {:.2f} dH = {:.2f}".format(dT,dH))
+                if ((dT >= STARTUP_DT) and not running) or manualTrigger:
+                    logger.info("Startup conditions detected")
+                    manualTrigger = False
+                    completed = 0
+                    remainTime = None
+                    running = True
+                    logName = time.strftime("%Y-%m-%d_%H-%M-%S")
+                    startTime = time.time()
+                    mylcd.backlight(1)
+                if running and ( ((T1 >= STOP_T) and (dT <= STOP_DT)) or (len(dHtable) == DH_TABLE_SIZE and max(abs(dHtable))<STOP_DH) ):
+                    logger.info("Stopped state detected")
+                    running = False
+                    mylcd.lcd_clear()
+                    mylcd.backlight(0)
+                if T1 > DRY_T and H1 < DRY_H :
+                    dry = True
+            T0 = T1
+            H0 = H1
+
+            if running :
                 completed = (100.0-H1) / (100.0-DRY_H) * 100.0
-                remainTime = (DRY_H-H1) / dH * PERIOD
-            updateDisplay()
-            msg = "{:s}\t{:.2f}\t{:.2f}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"),T1,H1)
-            with open(logName+".log","a+") as f:
-                f.write(msg)
-        
-        
-        if running and dry and not notificationFlag:            
-            elapsed_time = time.time() - startTime
-            ets = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
-            
-            # Send notification
-            init(pushKey)
-            pushMsg = "Elapsed time : " + ets + "\n"+ \
-                      "Now {:.2f} C {:.2f} %%RH".format(T1, H1) + \
-                      "Delta {:.2f} C {:.2f} %%RH".format(dT, dH)
-            Client("").send_message(message = pushMsg,
-                                    title = "Clothes are dry",
-                                    device = pushDeviceID,
-                                    icon = "1",
-                                    sound = "0",
-                                    vibration = "2",
-                                    url = "",
-                                    urltitle = "",
-                                    time2live = "0",
-                                    picture1 = "",
-                                    picture2 = "",
-                                    picture3 = "")
-            notificationFlag = True
-            
-        sleepTime = PERIOD - ((time.time() - t0) % PERIOD)
-        #print("Sleep {:.2f} sec".format(sleepTime))
-        time.sleep(sleepTime)
-		
-        
+                if len(dHtable) == DH_TABLE_SIZE >= AVG_N:
+                    if mean(dHtable[-AVG_N:]) < 0:
+                        remainTime = (DRY_H-H1) / mean(dHtable[-AVG_N:]) * PERIOD
+                    else:
+                        # if dHaverage > 0 then we do not update the remaining time
+                        pass
+                else:
+                    # There is not enough data to calculate the remainTime
+
+                    remainTime = None
+                updateDisplay()
+                msg = "{:s}\t{:.2f}\t{:.2f}\n".format(time.strftime("%Y-%m-%d %H:%M:%S"),T1,H1)
+                with open(logName+".log","a+") as f:
+                    f.write(msg)
+
+
+            if running and dry and not notificationFlag:
+                logger.info("The clothes are dry: sending noification")
+                elapsed_time = time.time() - startTime
+                ets = time.strftime("%H:%M:%S", time.gmtime(elapsed_time))
+
+                # Send notification
+                init(pushKey)
+                pushMsg = "Elapsed time : " + ets + "\n"+ \
+                          "Now {:.2f} C {:.2f} %RH\n".format(T1, H1) + \
+                          "Delta {:.2f} C {:.2f} %RH".format(dT, dH)
+                Client("").send_message(message = pushMsg,
+                                        title = "Clothes are dry",
+                                        device = pushDeviceID,
+                                        icon = "1",
+                                        sound = "0",
+                                        vibration = "2",
+                                        url = "",
+                                        urltitle = "",
+                                        time2live = "0",
+                                        picture1 = "",
+                                        picture2 = "",
+                                        picture3 = "")
+                notificationFlag = True
+
+            sleepTime = PERIOD - ((time.time() - t0) % PERIOD)
+            time.sleep(sleepTime)
+
+        except Exception as e:
+            fatalCount = fatalCount + 1
+            logger.fatal(e)
+            time.sleep(PERIOD)
+            if fatalCount == MAX_FATAL:
+                logger.info("The system has crached 5 times : system STOPPED")
+                init(pushKey)
+                pushMsg = "The system has crached 5 times : system STOPPED"
+                Client("").send_message(message = pushMsg,
+                                        title = "FATAL ERROR",
+                                        device = pushDeviceID,
+                                        icon = "1",
+                                        sound = "0",
+                                        vibration = "2",
+                                        url = "",
+                                        urltitle = "",
+                                        time2live = "0",
+                                        picture1 = "",
+                                        picture2 = "",
+                                        picture3 = "")
+                sys.exit(-1)
